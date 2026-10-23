@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.solab.alipayclean"
+    android:versionCode="5"
+    android:versionName="3.1">
+
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
+
+    <application
+        android:label="支付宝首页净化"
+        android:hasCode="true">
+
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="去掉支付宝首页推荐/闪购/秒杀卡片与底部理财/视频 Tab" />
+        <meta-data android:name="xposedminversion" android:value="82" />
+        <meta-data android:name="xposedscope" android:value="com.eg.android.AlipayGphone;com.eg.android.AlipayGphone.AlipayLogin" />
+
+    </application>
+</manifest>
