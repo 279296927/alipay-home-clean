@@ -10,7 +10,7 @@ ZIP=/usr/bin/zip
 XPJAR=/root/xposed-api/api-82.jar
 KS=/storage/emulated/0/Download/solab/fvip/fvip_debug.keystore
 OUTDIR="$HERE/out"
-APKNAME="${APKNAME:-AliClean-v3.0.apk}"
+APKNAME="${APKNAME:-AliClean-v3.1.apk}"
 
 echo "### workspace: $HERE"
 for f in "$AJAR" "$BT/d8" "$BT/apksigner" "$BT/zipalign" "$AAPT2" "$ZIP" "$XPJAR" "$KS"; do

@@ -48,6 +48,22 @@ public class HookEntry implements IXposedHookLoadPackage {
     /** MultiTab 标签标题关键词 */
     static final String[] DROP_TAB_TITLES = new String[]{"为你推荐", "推荐", "闪购", "秒杀"};
 
+    /** ---- 极速模式 ---- */
+    /** 是否强制开启极速模式 */
+    static final boolean FORCE_JISU = true;
+    /** SP 键：设备是否为低端机（值是 "T"/"F"） */
+    static final String SP_KEY_DEVICE_LOW = "task_grade_device_low";
+    /** SP 键：新版设备低端标记 */
+    static final String SP_KEY_DEVICE_LOW_NEW = "task_grade_device_low_new";
+    /** SP 键：极速模式开关 */
+    static final String SP_KEY_JISU = "jisu_pattern_state_key";
+    /** SP 键：设备评分 */
+    static final String SP_KEY_DEVICE_SCORE = "task_grade_device_score";
+    /** SP 键：新场景设备评分 */
+    static final String SP_KEY_DEVICE_SCORE_NEW = "task_grade_device_score_new";
+    /** HomeStateConfig.TAG_FLAG 的值，即「真」 */
+    static final String FLAG_TRUE = "T";
+
     /** 宫格适配器类名（各版本一致） */
     static final String GRID_CLASS = "com.alipay.android.phone.home.homegrid.HomeGridRecyclerAdapter";
     /** 信息流适配器候选类名：新版本在前，旧版本在后 */
@@ -145,6 +161,152 @@ public class HookEntry implements IXposedHookLoadPackage {
                     hookFeeds(feeds);
                 }
             } catch (Throwable ignored) {
+            }
+        }
+
+        if (FORCE_JISU) {
+            hookJiSuMode(cl);
+        }
+    }
+
+    // ================= 极速模式 =================
+
+    /**
+     * 强制开启极速模式。
+     *
+     * 支付宝 12.12.36 的判断链路（TaskGradeController.getGradeResult）：
+     *
+     *   strategy = ("T".equals(TaskDegradeLowDeviceUtil.getDeviceGradeInfo())
+     *               && isJiSuPatternSwitchOpen) ? "low" : "high";
+     *
+     * 其中：
+     *   - getDeviceGradeInfo() 读 SP "task_grade_device_low"，默认 "E"，判 "T" 才算低端机
+     *   - isJiSuPatternSwitchOpen 来自 SP "jisu_pattern_state_key"，构造时由 getJiSuPatternValue() 读取，
+     *     非 "F" 即视为开（默认开）
+     *
+     * 实测设备上 jisu= T 但 device_low = F，所以 strategy 恒为 "high"，极速模式不生效。
+     * 这里的做法是直接 hook SharedPreferences.getString / getInt：
+     *   - "task_grade_device_low"       -> 恒返回 "T"
+     *   - "task_grade_device_score"     -> 恒返回 0（低分）
+     *   - "jisu_pattern_state_key"      -> 恒返回 "T"
+     * 不改机型、不改 CPU、不动任何文件，纯读取侧拦截，进程退出即失效。
+     *
+     * 另外兜底 hook TaskDegradeLowDeviceUtil.getDeviceGradeInfo() 与
+     * TaskGradeController.getJiSuPatternValue()，防止某些路径绕开 SP 读取。
+     */
+    static void hookJiSuMode(ClassLoader cl) {
+        // ---------- 第 1 层：SharedPreferences 读取拦截 ----------
+        // 系统类是 boot classpath 加载的，用哪个 loader 都能命中，只挂一次即可。
+        if (HOOKED.add("jisu_sp")) {
+            try {
+                XposedHelpers.findAndHookMethod("android.app.SharedPreferencesImpl", null,
+                        "getString", String.class, String.class, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                String key = (String) param.args[0];
+                                if (SP_KEY_DEVICE_LOW.equals(key) || SP_KEY_DEVICE_LOW_NEW.equals(key)
+                                        || SP_KEY_JISU.equals(key)) {
+                                    Object old = param.getResult();
+                                    param.setResult(FLAG_TRUE);
+                                    if (!FLAG_TRUE.equals(old)) {
+                                        log("[jisu] SP.getString(" + key + ") " + old + " -> " + FLAG_TRUE);
+                                    }
+                                }
+                            }
+                        });
+                log("jisu: SharedPreferencesImpl.getString hooked");
+            } catch (Throwable t) {
+                log("jisu: SP getString hook fail " + t);
+            }
+            try {
+                XposedHelpers.findAndHookMethod("android.app.SharedPreferencesImpl", null,
+                        "getInt", String.class, int.class, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                String key = (String) param.args[0];
+                                if (SP_KEY_DEVICE_SCORE.equals(key) || SP_KEY_DEVICE_SCORE_NEW.equals(key)) {
+                                    Object old = param.getResult();
+                                    param.setResult(0);
+                                    log("[jisu] SP.getInt(" + key + ") " + old + " -> 0");
+                                }
+                            }
+                        });
+                log("jisu: SharedPreferencesImpl.getInt hooked");
+            } catch (Throwable t) {
+                log("jisu: SP getInt hook fail " + t);
+            }
+        }
+
+        // ---------- 第 2 层：TaskDegradeLowDeviceUtil.getDeviceGradeInfo ----------
+        // 支付宝内部类必须用支付宝自己的 ClassLoader 加载，且要等 dex 真正加载后才能成功，
+        // 所以在每次 tryHookLoader(cl) 时都重试一次，直到成功为止。
+        if (!HOOKED.contains("jisu_grade")) {
+            try {
+                Class<?> lowUtil = Class.forName(
+                        "com.alipay.mobile.framework.degrade.TaskDegradeLowDeviceUtil", false, cl);
+                XposedHelpers.findAndHookMethod(lowUtil, "getDeviceGradeInfo", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        param.setResult(FLAG_TRUE);
+                    }
+                });
+                HOOKED.add("jisu_grade");
+                log("jisu: TaskDegradeLowDeviceUtil.getDeviceGradeInfo hooked");
+            } catch (Throwable t) {
+                // 类还没加载出来，静默等待下一个 ClassLoader
+            }
+        }
+
+        // ---------- 第 3 层：TaskGradeController.getJiSuPatternValue ----------
+        if (!HOOKED.contains("jisu_switch")) {
+            try {
+                Class<?> tgc = Class.forName(
+                        "com.alipay.mobile.framework.degrade.TaskGradeController", false, cl);
+                XposedHelpers.findAndHookMethod(tgc, "getJiSuPatternValue", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        param.setResult(Boolean.TRUE);
+                    }
+                });
+                HOOKED.add("jisu_switch");
+                log("jisu: TaskGradeController.getJiSuPatternValue hooked");
+            } catch (Throwable t) {
+                // 同上，等后续 loader
+            }
+        }
+
+        // ---------- 第 4 层：TaskGradeController.getDevLevelAndCurRunningState ----------
+        // 上层还会再算一次设备等级（getStrategyByRunningState 等分支），
+        // 这里直接把返回对象的 deviceLevel 改成 "low"，保证结论是低端机。
+        if (!HOOKED.contains("jisu_level")) {
+            try {
+                Class<?> tgc = Class.forName(
+                        "com.alipay.mobile.framework.degrade.TaskGradeController", false, cl);
+                Class<?> reqCls = Class.forName(
+                        "com.alipay.mobile.framework.degrade.dynamic.GradeStateReqInfo", false, cl);
+                XposedHelpers.findAndHookMethod(tgc, "getDevLevelAndCurRunningState", reqCls,
+                        new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                Object result = param.getResult();
+                                if (result == null) {
+                                    return;
+                                }
+                                try {
+                                    Object old = XposedHelpers.getObjectField(result, "deviceLevel");
+                                    XposedHelpers.setObjectField(result, "deviceLevel", "low");
+                                    if (!"low".equals(old)) {
+                                        log("[jisu] deviceLevel " + old + " -> low");
+                                    }
+                                } catch (Throwable t) {
+                                    log("jisu: set deviceLevel fail " + t);
+                                }
+                            }
+                        });
+                HOOKED.add("jisu_level");
+                log("jisu: getDevLevelAndCurRunningState hooked");
+            } catch (Throwable t) {
+                // 等后续 ClassLoader
             }
         }
     }
