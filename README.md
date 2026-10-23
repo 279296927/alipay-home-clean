@@ -11,6 +11,29 @@
 
 ---
 
+## 下载
+
+**[⬇ AliClean v2.1](https://github.com/279296927/alipay-home-clean/releases/latest)**
+
+| 校验 | 值 |
+|---|---|
+| 文件 | `AliClean-v2.1.apk`（16.5 KB） |
+| SHA-256 | `1de2052e895e0e3ac64896f3d703d9d772c8f823eb54e496efb0a4abe1bdd593` |
+| MD5 | `40e0b93c9106bd396089362a0c755f3b` |
+| versionCode / versionName | `3` / `2.1` |
+| 签名证书 SHA-256 | `350d6c7d07d242bb3e39f77e548534b81494b3bff18015112f335bc861f478a1` |
+
+```bash
+sha256sum AliClean-v2.1.apk
+# 期望: 1de2052e895e0e3ac64896f3d703d9d772c8f823eb54e496efb0a4abe1bdd593
+```
+
+> 从论坛、网盘等非本仓库渠道获取的副本可能已被植入恶意代码。**下载后请务必核对 SHA-256。**
+
+安装后模块**没有任何权限**（manifest 连 `INTERNET` 都没声明），可自行用 `aapt2 dump permissions` 或任意 APK 分析工具验证。
+
+---
+
 ## 效果
 
 ### 底部 Tab：5 → 3
