@@ -1,0 +1,21 @@
+# build output
+build/
+out/
+*.idsig
+
+# local keystore & api jar (bring your own)
+hook/keystore/
+hook/libs/*.jar
+!hook/libs/.gitkeep
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# local notes
+*.local.md

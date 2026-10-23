@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 279296927
+Copyright (c) 2026 AliClean contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+附加说明（不改变 MIT 许可的效力）：
+
+本许可仅授予版权层面的权利，不授予任何商标使用权，不豁免使用者所在地的
+法律法规，也不豁免使用者与任何第三方平台之间的合同义务（用户协议）。
+详见 DISCLAIMER.md。
