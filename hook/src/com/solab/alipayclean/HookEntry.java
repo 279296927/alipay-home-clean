@@ -7,8 +7,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-import java.lang.reflect.Field;
-import java.util.ArrayList;
+import java.lang.reflect.Method;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -21,12 +20,19 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 /**
- * 支付宝首页净化 v2.1
+ * 支付宝首页净化 v3.0
+ *
+ * v3.0 相对 v2.1 的变化：
+ *   - 支付宝升级到 12.12.36.8000 后内部类与方法大量重命名，v2.1 的三个 hook 全部 NoSuchMethodError。
+ *   - 宫格：HomeGridRecyclerAdapter.e(List,boolean) -> c(List,boolean)；r(List) -> n(List) / q(List)
+ *   - 信息流：com.alipay.mobile.homefeeds.lg -> rg（lg 在新版变成了一个无关的 synthetic Runnable）
+ *   - 新增动态签名探测：方法名变了也能按"参数表 + 返回类型"在目标类里自动找到入口，
+ *     不必每升级一次就改一遍源码。
+ *
  * 目标：
  *  1) 底部 Tab 去掉「理财」(20001688) 与「视频」(20002065，LivingConstants.APPID)
  *  2) 首页宫格去掉「闪购极速版」(appId=20000120) 等电商推广入口
- *  3) 首页信息流 MultiTab 去掉「为你推荐」等推荐标签页
- * 保留：首页/消息/我的 三个 Tab 与其余常规功能
+ *  3) 首页信息流 MultiTab 去掉「为你推荐」等推荐标签页，并收起整块
  */
 public class HookEntry implements IXposedHookLoadPackage {
 
@@ -37,10 +43,18 @@ public class HookEntry implements IXposedHookLoadPackage {
     static final Set<String> DROP_TAB_IDS = new HashSet<String>();
     /** 要移除的宫格 appId */
     static final Set<String> DROP_APP_IDS = new HashSet<String>();
-    /** 要移除的宫格名称关键词 */
+    /** 宫格名称关键词 */
     static final String[] DROP_APP_KEYS = new String[]{"闪购", "秒杀", "限时秒", "特卖", "今日爆款"};
-    /** 要移除的 MultiTab 标签标题关键词 */
+    /** MultiTab 标签标题关键词 */
     static final String[] DROP_TAB_TITLES = new String[]{"为你推荐", "推荐", "闪购", "秒杀"};
+
+    /** 宫格适配器类名（各版本一致） */
+    static final String GRID_CLASS = "com.alipay.android.phone.home.homegrid.HomeGridRecyclerAdapter";
+    /** 信息流适配器候选类名：新版本在前，旧版本在后 */
+    static final String[] FEEDS_CLASSES = new String[]{
+            "com.alipay.mobile.homefeeds.rg",   // 12.12.36+
+            "com.alipay.mobile.homefeeds.lg",   // 12.12.30
+    };
 
     static {
         DROP_TAB_IDS.add("20001688"); // 理财 / WEALTH
@@ -50,7 +64,6 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     private static final Set<ClassLoader> LOADERS = new HashSet<ClassLoader>();
     private static final Set<String> HOOKED = new HashSet<String>();
-    private static final Set<Object> DUMPED = new HashSet<Object>();
 
     static void log(String msg) {
         XposedBridge.log(TAG + " " + msg);
@@ -61,7 +74,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (!PKG.equals(lpparam.packageName)) {
             return;
         }
-        log("=== AliClean v2.1 attached, pkg=" + lpparam.packageName + " ===");
+        log("=== AliClean v3.0 attached, pkg=" + lpparam.packageName + " ===");
         tryHookLoader(lpparam.classLoader);
 
         try {
@@ -113,19 +126,26 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
 
         try {
-            Class<?> adapter = Class.forName("com.alipay.android.phone.home.homegrid.HomeGridRecyclerAdapter", false, cl);
+            Class<?> adapter = Class.forName(GRID_CLASS, false, cl);
             if (adapter != null && HOOKED.add("grid")) {
                 hookGrid(adapter);
             }
         } catch (Throwable ignored) {
         }
 
-        try {
-            Class<?> lg = Class.forName("com.alipay.mobile.homefeeds.lg", false, cl);
-            if (lg != null && HOOKED.add("feeds")) {
-                hookFeeds(lg);
+        for (String name : FEEDS_CLASSES) {
+            if (HOOKED.contains("feeds")) {
+                break;
             }
-        } catch (Throwable ignored) {
+            try {
+                Class<?> feeds = Class.forName(name, false, cl);
+                if (feeds != null && hasField(feeds, "h") && hasField(feeds, "f")) {
+                    HOOKED.add("feeds");
+                    log("feeds class resolved: " + name);
+                    hookFeeds(feeds);
+                }
+            } catch (Throwable ignored) {
+            }
         }
     }
 
@@ -161,7 +181,6 @@ public class HookEntry implements IXposedHookLoadPackage {
             log("hook attachTab fail: " + t);
         }
 
-        // 保险：TabBarManager 刷新前再从视图列表剔除一次
         try {
             final Class<?> mgrCls = frag.getClassLoader().loadClass("com.alipay.android.launcher.tab.TabBarManager");
             XposedHelpers.findAndHookMethod(mgrCls, "refreshTabBar", new XC_MethodHook() {
@@ -187,7 +206,6 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    /** 从 widgetGroups 里摘掉目标 Tab */
     static void filterWidgetGroups(List<?> list, String from) {
         Iterator<?> it = list.iterator();
         int removed = 0;
@@ -215,7 +233,6 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    /** 从 tabWidgetItemViewList 里摘掉目标 Tab 视图 */
     static void filterTabItemViews(List<?> list, String from) {
         Iterator<?> it = list.iterator();
         int removed = 0;
@@ -281,47 +298,91 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     // ================= 首页宫格净化 =================
 
+    /**
+     * 动态定位宫格入口：所有 (List, boolean) -> List 的方法都挂上。
+     * 12.12.30 是 e(List,boolean)，12.12.36 是 c(List,boolean)。
+     * 另外再挂 (List) -> void 的 rebuild / refresh 入口作兜底（n/q）。
+     */
     static void hookGrid(Class<?> adapter) {
         log("hook HomeGridRecyclerAdapter OK");
+        int n = 0;
 
-        // e(List, boolean)：原始列表 -> 布局列表，入口处先净化入参
-        try {
-            XposedHelpers.findAndHookMethod(adapter, "e", List.class, boolean.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        Object raw = param.args[0];
-                        if (raw instanceof List) {
-                            filterGridItems((List<?>) raw, "e-raw");
+        for (Method m : adapter.getDeclaredMethods()) {
+            Class<?>[] ps = m.getParameterTypes();
+            if (ps.length != 2) {
+                continue;
+            }
+            if (!List.class.isAssignableFrom(ps[0]) || ps[1] != boolean.class) {
+                continue;
+            }
+            if (!List.class.isAssignableFrom(m.getReturnType())) {
+                continue;
+            }
+            try {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            Object raw = param.args[0];
+                            if (raw instanceof List) {
+                                filterGridItems((List<?>) raw, "grid-transform-raw");
+                            }
+                        } catch (Throwable t) {
+                            log("grid filter err " + t);
                         }
-                    } catch (Throwable t) {
-                        log("grid e filter err " + t);
                     }
-                }
-            });
-            log("e(List,boolean) hooked");
-        } catch (Throwable t) {
-            log("hook e fail: " + t);
+                });
+                n++;
+                log("grid transform hooked -> " + m.getName() + "(List,boolean):List");
+            } catch (Throwable t) {
+                log("hook grid method fail " + m.getName() + " : " + t);
+            }
         }
 
-        // r(List)：rebuildPagerData，兜底再净化一次
-        try {
-            XposedHelpers.findAndHookMethod(adapter, "r", List.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        Object raw = param.args[0];
-                        if (raw instanceof List) {
-                            filterGridItems((List<?>) raw, "r-raw");
+        for (Method m : adapter.getDeclaredMethods()) {
+            Class<?>[] ps = m.getParameterTypes();
+            if (ps.length != 1) {
+                continue;
+            }
+            if (!List.class.isAssignableFrom(ps[0]) || m.getReturnType() != void.class) {
+                continue;
+            }
+            final String name = m.getName();
+            try {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            Object raw = param.args[0];
+                            if (raw instanceof List) {
+                                filterGridItems((List<?>) raw, "grid-rebuild:" + name);
+                            }
+                        } catch (Throwable t) {
+                            log("grid rebuild filter err " + t);
                         }
-                    } catch (Throwable t) {
-                        log("grid r filter err " + t);
                     }
+                });
+                n++;
+                log("grid rebuild hooked -> " + name + "(List)");
+            } catch (Throwable t) {
+                log("hook grid rebuild fail " + name + " : " + t);
+            }
+        }
+
+        if (n == 0) {
+            log("!! grid: no matching method, signatures are:");
+            for (Method m : adapter.getDeclaredMethods()) {
+                StringBuilder sb = new StringBuilder("   ").append(m.getName()).append("(");
+                Class<?>[] ps = m.getParameterTypes();
+                for (int i = 0; i < ps.length; i++) {
+                    if (i > 0) {
+                        sb.append(",");
+                    }
+                    sb.append(ps[i].getSimpleName());
                 }
-            });
-            log("r(List) hooked");
-        } catch (Throwable t) {
-            log("hook r fail: " + t);
+                sb.append("):").append(m.getReturnType().getSimpleName());
+                log(sb.toString());
+            }
         }
     }
 
@@ -342,6 +403,24 @@ public class HookEntry implements IXposedHookLoadPackage {
             try {
                 appName = (String) XposedHelpers.getObjectField(o, "appName");
             } catch (Throwable ignored) {
+            }
+            if (appId == null) {
+                try {
+                    Object r = XposedHelpers.callMethod(o, "getAppId");
+                    if (r != null) {
+                        appId = r.toString();
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            if (appName == null) {
+                try {
+                    Object r = XposedHelpers.callMethod(o, "getAppName");
+                    if (r != null) {
+                        appName = r.toString();
+                    }
+                } catch (Throwable ignored) {
+                }
             }
             boolean drop = appId != null && DROP_APP_IDS.contains(appId);
             if (!drop && appName != null) {
@@ -365,79 +444,91 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     // ================= 首页信息流 MultiTab 净化 =================
 
-    static void hookFeeds(final Class<?> lgCls) {
-        log("hook MultiTabHomeAdapter(lg) OK");
-        try {
-            XposedHelpers.findAndHookMethod(lgCls, "a", boolean.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        Object listObj = XposedHelpers.getObjectField(param.thisObject, "h");
-                        if (listObj instanceof List) {
-                            boolean empty = filterMultiTabs((List<?>) listObj, "lg.a-before");
-                            if (empty) {
-                                Object subObj = XposedHelpers.getObjectField(param.thisObject, "m");
-                                if (subObj instanceof List) {
-                                    int before = ((List<?>) subObj).size();
-                                    ((List<?>) subObj).clear();
-                                    if (before > 0) {
-                                        log("[lg.a-before] cleared sub pages " + before + " -> 0");
+    static void hookFeeds(final Class<?> feedsCls) {
+        log("hook MultiTabHomeAdapter(" + feedsCls.getSimpleName() + ") OK");
+        int n = 0;
+
+        for (Method m : feedsCls.getDeclaredMethods()) {
+            Class<?>[] ps = m.getParameterTypes();
+            if (ps.length != 1 || ps[0] != boolean.class || m.getReturnType() != void.class) {
+                continue;
+            }
+            final String name = m.getName();
+            try {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            Object listObj = XposedHelpers.getObjectField(param.thisObject, "h");
+                            if (listObj instanceof List) {
+                                boolean empty = filterMultiTabs((List<?>) listObj, "feeds-before:" + name);
+                                if (empty) {
+                                    Object subObj = XposedHelpers.getObjectField(param.thisObject, "m");
+                                    if (subObj instanceof List) {
+                                        int before = ((List<?>) subObj).size();
+                                        ((List<?>) subObj).clear();
+                                        if (before > 0) {
+                                            log("[feeds-before] cleared sub pages " + before + " -> 0");
+                                        }
                                     }
                                 }
                             }
-                        } else {
-                            log("[lg.a] h is " + (listObj == null ? "null" : listObj.getClass().getName()));
+                        } catch (Throwable t) {
+                            log("feeds filter err " + t);
                         }
-                    } catch (Throwable t) {
-                        log("feeds filter err " + t);
                     }
-                }
 
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        Object listObj = XposedHelpers.getObjectField(param.thisObject, "h");
-                        if (listObj instanceof List) {
-                            dumpMultiTabs((List<?>) listObj, "lg.a-after");
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            Object listObj = XposedHelpers.getObjectField(param.thisObject, "h");
+                            if (listObj instanceof List) {
+                                dumpMultiTabs((List<?>) listObj, "feeds-after:" + name);
+                            }
+                            collapseIfEmpty(param.thisObject);
+                        } catch (Throwable t) {
+                            log("feeds after err " + t);
                         }
-                        Object barObj = XposedHelpers.getObjectField(param.thisObject, "f");
-                        if (barObj instanceof ViewGroup && !DUMPED.contains(barObj)) {
-                            DUMPED.add(barObj);
-                            log("[bar] childCount=" + ((ViewGroup) barObj).getChildCount()
-                                    + " visibility=" + ((View) barObj).getVisibility());
-                        }
-                        collapseIfEmpty(param.thisObject);
-                    } catch (Throwable t) {
-                        log("feeds after err " + t);
                     }
-                }
-            });
-            log("lg.a(boolean) hooked");
-        } catch (Throwable t) {
-            log("hook lg.a fail: " + t);
+                });
+                n++;
+                log("feeds bind hooked -> " + name + "(boolean)");
+            } catch (Throwable t) {
+                log("hook feeds method fail " + name + " : " + t);
+            }
         }
 
-        // m 列表 = 各标签页内容（feed 页），同步过滤
-        try {
-            XposedHelpers.findAndHookMethod(lgCls, "b", String.class, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        log("[lg.b] " + param.args[0] + " -> " + param.getResult());
-                    } catch (Throwable ignored) {
+        if (n == 0) {
+            log("!! feeds: no boolean(void) entry, signatures are:");
+            for (Method m : feedsCls.getDeclaredMethods()) {
+                StringBuilder sb = new StringBuilder("   ").append(m.getName()).append("(");
+                Class<?>[] ps = m.getParameterTypes();
+                for (int i = 0; i < ps.length; i++) {
+                    if (i > 0) {
+                        sb.append(",");
                     }
+                    sb.append(ps[i].getSimpleName());
                 }
-            });
-        } catch (Throwable ignored) {
+                sb.append("):").append(m.getReturnType().getSimpleName());
+                log(sb.toString());
+            }
         }
     }
 
-    /** MultiTab 为空时把整块信息流收起（高度 0 + GONE） */
-    static void collapseIfEmpty(Object lgObj) {
+    static boolean hasField(Class<?> c, String name) {
         try {
-            Object hObj = XposedHelpers.getObjectField(lgObj, "h");
+            c.getDeclaredField(name);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    static void collapseIfEmpty(Object feedsObj) {
+        try {
+            Object hObj = XposedHelpers.getObjectField(feedsObj, "h");
             boolean empty = !(hObj instanceof List) || ((List<?>) hObj).isEmpty();
-            Object holder = XposedHelpers.getObjectField(lgObj, "c");
+            Object holder = XposedHelpers.getObjectField(feedsObj, "c");
             if (holder == null) {
                 return;
             }
@@ -446,9 +537,6 @@ public class HookEntry implements IXposedHookLoadPackage {
                 return;
             }
             View itemView = (View) itemViewObj;
-            if (itemView == null) {
-                return;
-            }
             if (empty) {
                 ViewGroup.LayoutParams lp = itemView.getLayoutParams();
                 if (lp != null && lp.height != 0) {
